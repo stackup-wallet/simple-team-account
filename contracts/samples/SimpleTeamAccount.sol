@@ -47,16 +47,26 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
     using LibString for string;
 
     address public verifier;
-    uint256 public signerId;
-    mapping(uint256 id => Signer s) signers;
+    mapping(bytes32 id => Signer s) internal signers;
 
     IEntryPoint private immutable _entryPoint;
 
-    event SimpleTeamAccountInitialized(IEntryPoint indexed entryPoint, Signer initSigner, address initVerifier);
+    event SimpleTeamAccountInitialized(IEntryPoint indexed entryPoint);
+    event SimpleTeamAccountSignerSet(bytes32 signerId);
+    event SimpleTeamAccountSignerDeleted(bytes32 signerId);
+    event SimpleTeamAccountVerifierSet(address verifier);
 
     /// @inheritdoc BaseAccount
     function entryPoint() public view virtual override returns (IEntryPoint) {
         return _entryPoint;
+    }
+
+    function getSigner(bytes32 signerId) public view returns (Signer memory) {
+        return signers[signerId];
+    }
+
+    function getSignerId(Signer calldata signer) public pure returns (bytes32) {
+        return keccak256(abi.encode(signer.p256x, signer.p256y, signer.ecdsa));
     }
 
     // solhint-disable-next-line no-empty-blocks
@@ -100,6 +110,34 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
     }
 
     /**
+     * Sets a new signer or overrides an existing one on the account.
+     * @param signer The Signer tuple to save.
+     */
+    function setSigner(Signer calldata signer) external {
+        _requireFromEntryPoint();
+        _setSigner(signer);
+    }
+
+    /**
+     * Deletes a signer from the account.
+     * @param signerId The id of the signer to remove.
+     */
+    function deleteSigner(bytes32 signerId) external {
+        _requireFromEntryPoint();
+        delete signers[signerId];
+        emit SimpleTeamAccountSignerDeleted(signerId);
+    }
+
+    /**
+     * Sets a new verifier for approving member level transactions.
+     * @param aVerifier The address for the new verifying entity.
+     */
+    function setVerifier(address aVerifier) external {
+        _requireFromEntryPoint();
+        _setVerifier(aVerifier);
+    }
+
+    /**
      * @dev The _entryPoint member is immutable, to reduce gas consumption.
      * @param initSigner the owner (signer) of this account
      * @param initVerifier An authorized entity for approving member level transactions.
@@ -109,10 +147,26 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
     }
 
     function _initialize(Signer calldata initSigner, address initVerifier) internal virtual {
-        verifier = initVerifier;
-        signers[signerId] = initSigner;
-        signerId++;
-        emit SimpleTeamAccountInitialized(_entryPoint, initSigner, initVerifier);
+        _setSigner(initSigner);
+        _setVerifier(initVerifier);
+        emit SimpleTeamAccountInitialized(_entryPoint);
+    }
+
+    function _setSigner(Signer calldata signer) internal {
+        require(
+            (signer.p256x != 0 && signer.p256y != 0 && signer.ecdsa == address(0))
+                || (signer.p256x == 0 && signer.p256y == 0 && signer.ecdsa != address(0)),
+            "account: must be one of p256 or ecdsa"
+        );
+
+        bytes32 id = getSignerId(signer);
+        signers[id] = signer;
+        emit SimpleTeamAccountSignerSet(id);
+    }
+
+    function _setVerifier(address aVerifier) internal {
+        verifier = aVerifier;
+        emit SimpleTeamAccountVerifierSet(aVerifier);
     }
 
     function _validateSignature(PackedUserOperation calldata userOp, bytes32 userOpHash)
@@ -121,7 +175,7 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         override
         returns (uint256 validationData)
     {
-        Signer memory signer = signers[uint256(bytes32(userOp.signature[:32]))];
+        Signer memory signer = signers[bytes32(userOp.signature[:32])];
         require(signer.level != Access.Outsider, "account: unauthorized");
 
         // Assuming WebAuthn signature.
