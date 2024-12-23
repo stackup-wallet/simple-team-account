@@ -5,16 +5,22 @@ pragma solidity ^0.8.23;
 /* solhint-disable no-inline-assembly */
 /* solhint-disable reason-string */
 
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "../core/BaseAccount.sol";
 import "../core/Helpers.sol";
 import "./callback/TokenCallbackHandler.sol";
 
-import {LibString} from "solady/utils/LibString.sol";
-import {WebAuthn} from "webauthn-sol/WebAuthn.sol";
-import {Base64} from "openzeppelin-contracts/contracts/utils/Base64.sol";
+import {Initializable} from "solady/src/utils/Initializable.sol";
+import {ECDSA} from "solady/src/utils/ECDSA.sol";
+import {LibString} from "solady/src/utils/LibString.sol";
+import {WebAuthn} from "solady/src/utils/WebAuthn.sol";
+import {Base64} from "solady/src/utils/Base64.sol";
+import {EfficientHashLib} from "solady/src/utils/EfficientHashLib.sol";
+
+struct Call {
+    address target;
+    uint256 value;
+    bytes data;
+}
 
 enum Access {
     Outsider,
@@ -22,10 +28,14 @@ enum Access {
     Owner
 }
 
+/**
+ * Data structure for storing the public credentials for a signer.
+ * If WebAuthn, pubKeySlt1 and pubKeySlt2 is the P256 x and y coordinates.
+ * If ECDSA, pubKeySlt1 is the padded address and pubKeySlt2 is 0.
+ */
 struct Signer {
-    uint256 p256x;
-    uint256 p256y;
-    address ecdsa;
+    bytes32 pubKeySlt1;
+    bytes32 pubKeySlt2;
     Access level;
 }
 
@@ -42,6 +52,7 @@ struct Signer {
  *      4. Member with ECDSA and verified with ECDSA
  *
  * SimpleTeamAccount is originally forked from SimpleAccount.
+ * The execute and executeBatch functions are modified from Solady.
  */
 contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
     using LibString for string;
@@ -56,6 +67,11 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
     event SimpleTeamAccountSignerDeleted(bytes32 signerId);
     event SimpleTeamAccountVerifierSet(address verifier);
 
+    modifier onlySelf() {
+        _onlySelf();
+        _;
+    }
+
     /// @inheritdoc BaseAccount
     function entryPoint() public view virtual override returns (IEntryPoint) {
         return _entryPoint;
@@ -65,8 +81,8 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         return signers[signerId];
     }
 
-    function getSignerId(Signer calldata signer) public pure returns (bytes32) {
-        return keccak256(abi.encode(signer.p256x, signer.p256y, signer.ecdsa));
+    function getSignerId(bytes32 pubKeySlt1, bytes32 pubKeySlt2) public pure returns (bytes32) {
+        return EfficientHashLib.hash(pubKeySlt1, pubKeySlt2);
     }
 
     // solhint-disable-next-line no-empty-blocks
@@ -77,53 +93,93 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         _disableInitializers();
     }
 
-    /**
-     * execute a transaction (called directly from owner, or by entryPoint)
-     * @param dest destination address to call
-     * @param value the value to pass in this call
-     * @param func the calldata to pass in this call
-     */
-    function execute(address dest, uint256 value, bytes calldata func) external {
-        _requireFromEntryPoint();
-        _call(dest, value, func);
+    function _onlySelf() internal view {
+        // directly from the account itself (which gets redirected through execute())
+        require(msg.sender == address(this), "only self");
     }
 
     /**
-     * execute a sequence of transactions
-     * @dev to reduce gas consumption for trivial case (no value), use a zero-length array to mean zero value
-     * @param dest an array of destination addresses
-     * @param value an array of values to pass to each call. can be zero-length for no-value calls
-     * @param func an array of calldata to pass to each call
+     * execute a transaction
+     * @param target destination address to call
+     * @param value the value to pass in this call
+     * @param data the calldata to pass in this call
      */
-    function executeBatch(address[] calldata dest, uint256[] calldata value, bytes[] calldata func) external {
+    function execute(address target, uint256 value, bytes calldata data) external returns (bytes memory result) {
         _requireFromEntryPoint();
-        require(dest.length == func.length && (value.length == 0 || value.length == func.length), "wrong array lengths");
-        if (value.length == 0) {
-            for (uint256 i = 0; i < dest.length; i++) {
-                _call(dest[i], 0, func[i]);
+        assembly {
+            result := mload(0x40)
+            calldatacopy(result, data.offset, data.length)
+            if iszero(call(gas(), target, value, result, data.length, codesize(), 0x00)) {
+                // Bubble up the revert if the call reverts.
+                returndatacopy(result, 0x00, returndatasize())
+                revert(result, returndatasize())
             }
-        } else {
-            for (uint256 i = 0; i < dest.length; i++) {
-                _call(dest[i], value[i], func[i]);
-            }
+            mstore(result, returndatasize()) // Store the length.
+            let o := add(result, 0x20)
+            returndatacopy(o, 0x00, returndatasize()) // Copy the returndata.
+            mstore(0x40, add(o, returndatasize())) // Allocate the memory.
         }
     }
 
     /**
-     * Sets a new signer or overrides an existing one on the account.
-     * @param signer The Signer tuple to save.
+     * execute a sequence of transactions
+     * @param calls an array of calls to make from this account
      */
-    function setSigner(Signer calldata signer) external {
+    function executeBatch(Call[] calldata calls) external returns (bytes[] memory results) {
         _requireFromEntryPoint();
-        _setSigner(signer);
+        assembly {
+            results := mload(0x40)
+            mstore(results, calls.length)
+            let r := add(0x20, results)
+            let m := add(r, shl(5, calls.length))
+            calldatacopy(r, calls.offset, shl(5, calls.length))
+            for { let end := m } iszero(eq(r, end)) { r := add(r, 0x20) } {
+                let e := add(calls.offset, mload(r))
+                let o := add(e, calldataload(add(e, 0x40)))
+                calldatacopy(m, add(o, 0x20), calldataload(o))
+                // forgefmt: disable-next-item
+                if iszero(call(gas(), calldataload(e), calldataload(add(e, 0x20)),
+                    m, calldataload(o), codesize(), 0x00)) {
+                    // Bubble up the revert if the call reverts.
+                    returndatacopy(m, 0x00, returndatasize())
+                    revert(m, returndatasize())
+                }
+                mstore(r, m) // Append `m` into `results`.
+                mstore(m, returndatasize()) // Store the length,
+                let p := add(m, 0x20)
+                returndatacopy(p, 0x00, returndatasize()) // and copy the returndata.
+                m := add(p, returndatasize()) // Advance `m`.
+            }
+            mstore(0x40, m) // Allocate the memory.
+        }
+    }
+
+    /**
+     * Sets a new WebAuthn signer or overrides an existing one on the account.
+     * @param x The P256 x coordinate of the public key.
+     * @param y The P256 y coordinate of the public key.
+     * @param level The access level for the signer.
+     */
+    function setWebAuthnSigner(bytes32 x, bytes32 y, Access level) external onlySelf {
+        Signer memory s = Signer(x, y, level);
+        _setSigner(s);
+    }
+
+    /**
+     * Sets a new ECDSA signer or overrides an existing one on the account.
+     * @param ecdsa The signer address.
+     * @param level The access level for the signer.
+     */
+    function setECDSASigner(address ecdsa, Access level) external onlySelf {
+        Signer memory s = Signer(bytes32(uint256(uint160(ecdsa))), 0, level);
+        _setSigner(s);
     }
 
     /**
      * Deletes a signer from the account.
      * @param signerId The id of the signer to remove.
      */
-    function deleteSigner(bytes32 signerId) external {
-        _requireFromEntryPoint();
+    function deleteSigner(bytes32 signerId) external onlySelf {
         delete signers[signerId];
         emit SimpleTeamAccountSignerDeleted(signerId);
     }
@@ -132,8 +188,7 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
      * Sets a new verifier for approving member level transactions.
      * @param aVerifier The address for the new verifying entity.
      */
-    function setVerifier(address aVerifier) external {
-        _requireFromEntryPoint();
+    function setVerifier(address aVerifier) external onlySelf {
         _setVerifier(aVerifier);
     }
 
@@ -152,14 +207,8 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         emit SimpleTeamAccountInitialized(_entryPoint);
     }
 
-    function _setSigner(Signer calldata signer) internal {
-        require(
-            (signer.p256x != 0 && signer.p256y != 0 && signer.ecdsa == address(0))
-                || (signer.p256x == 0 && signer.p256y == 0 && signer.ecdsa != address(0)),
-            "account: must be one of p256 or ecdsa"
-        );
-
-        bytes32 id = getSignerId(signer);
+    function _setSigner(Signer memory signer) internal {
+        bytes32 id = EfficientHashLib.hash(signer.pubKeySlt1, signer.pubKeySlt2);
         signers[id] = signer;
         emit SimpleTeamAccountSignerSet(id);
     }
@@ -180,7 +229,7 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
 
         // Assuming WebAuthn signature.
         bytes calldata data = userOp.signature[32:];
-        if (signer.ecdsa == address(0)) {
+        if (signer.pubKeySlt2 != 0) {
             if (signer.level == Access.Owner) {
                 return _validateWebAuthnOwner(signer, userOpHash, data);
             }
@@ -201,17 +250,18 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
     {
         bytes memory challenge = abi.encode(userOpHash);
         WebAuthn.WebAuthnAuth memory auth = _webAuthn(challenge, data);
-        return WebAuthn.verify(challenge, true, auth, signer.p256x, signer.p256y)
+        return WebAuthn.verify(challenge, true, auth, signer.pubKeySlt1, signer.pubKeySlt2)
             ? SIG_VALIDATION_SUCCESS
             : SIG_VALIDATION_FAILED;
     }
 
     function _validateECDSAOwner(Signer memory signer, bytes32 userOpHash, bytes calldata data)
         internal
-        pure
+        view
         returns (uint256 validationData)
     {
-        return signer.ecdsa == ECDSA.recover(MessageHashUtils.toEthSignedMessageHash(userOpHash), data)
+        return address(uint160(uint256(signer.pubKeySlt1)))
+            == ECDSA.recover(ECDSA.toEthSignedMessageHash(userOpHash), data)
             ? SIG_VALIDATION_SUCCESS
             : SIG_VALIDATION_FAILED;
     }
@@ -224,8 +274,8 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         bytes memory challenge = abi.encode(userOpHash);
         WebAuthn.WebAuthnAuth memory auth = _webAuthn(challenge, data[65:]);
 
-        return verifier == ECDSA.recover(MessageHashUtils.toEthSignedMessageHash(userOpHash), data[:65])
-            && WebAuthn.verify(challenge, true, auth, signer.p256x, signer.p256y)
+        return verifier == ECDSA.recover(ECDSA.toEthSignedMessageHash(userOpHash), data[:65])
+            && WebAuthn.verify(challenge, true, auth, signer.pubKeySlt1, signer.pubKeySlt2)
             ? SIG_VALIDATION_SUCCESS
             : SIG_VALIDATION_FAILED;
     }
@@ -235,8 +285,9 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         view
         returns (uint256 validationData)
     {
-        bytes32 hash = MessageHashUtils.toEthSignedMessageHash(userOpHash);
-        return verifier == ECDSA.recover(hash, data[:65]) && signer.ecdsa == ECDSA.recover(hash, data[65:])
+        bytes32 hash = ECDSA.toEthSignedMessageHash(userOpHash);
+        return verifier == ECDSA.recover(hash, data[:65])
+            && address(uint160(uint256(signer.pubKeySlt1))) == ECDSA.recover(hash, data[65:])
             ? SIG_VALIDATION_SUCCESS
             : SIG_VALIDATION_FAILED;
     }
@@ -252,25 +303,16 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
             string memory clientDataJSONPost,
             uint256 challengeIndex,
             uint256 typeIndex,
-            uint256 r,
-            uint256 s
-        ) = abi.decode(data, (bytes, string, string, uint256, uint256, uint256, uint256));
+            bytes32 r,
+            bytes32 s
+        ) = abi.decode(data, (bytes, string, string, uint256, uint256, bytes32, bytes32));
         auth = WebAuthn.WebAuthnAuth({
             authenticatorData: authenticatorData,
-            clientDataJSON: clientDataJSONPre.concat(Base64.encodeURL(challenge)).concat(clientDataJSONPost),
+            clientDataJSON: clientDataJSONPre.concat(Base64.encode(challenge, true, true)).concat(clientDataJSONPost),
             challengeIndex: challengeIndex,
             typeIndex: typeIndex,
             r: r,
             s: s
         });
-    }
-
-    function _call(address target, uint256 value, bytes memory data) internal {
-        (bool success, bytes memory result) = target.call{value: value}(data);
-        if (!success) {
-            assembly {
-                revert(add(result, 32), mload(result))
-            }
-        }
     }
 }

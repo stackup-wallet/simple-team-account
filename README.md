@@ -4,8 +4,8 @@ This repository is a fork of [eth-infinitism/account-abstraction](https://github
 
 | Contract                                                                           | Address                                      |
 | ---------------------------------------------------------------------------------- | -------------------------------------------- |
-| [`SimpleTeamAccount.sol`](./contracts/samples/SimpleTeamAccount.sol)               | `0xC4F11D3ac714ce0Cd5F5309188E8b752F6d0b890` |
-| [`SimpleTeamAccountFactory.sol`](./contracts/samples/SimpleTeamAccountFactory.sol) | `0x35954DA784a786dd565c5fA6BD00397303961F18` |
+| [`SimpleTeamAccount.sol`](./contracts/samples/SimpleTeamAccount.sol)               | `0x40DA7aECC1e711a2F683642878692AAEFDDA0E32` |
+| [`SimpleTeamAccountFactory.sol`](./contracts/samples/SimpleTeamAccountFactory.sol) | `0xF3150664c2a505690bbaA23a5d9bF863eeFC485B` |
 
 ## Usage
 
@@ -16,7 +16,6 @@ Install dependencies:
 
 ```shell
 yarn install
-forge install
 ```
 
 Compile contracts:
