@@ -1,5 +1,4 @@
 import { config as dotenvConfig } from "dotenv";
-import "@nomicfoundation/hardhat-foundry";
 import "@nomiclabs/hardhat-waffle";
 import "@typechain/hardhat";
 import { HardhatUserConfig, task } from "hardhat/config";
