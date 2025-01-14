@@ -274,10 +274,9 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         bytes memory challenge = abi.encode(userOpHash);
         WebAuthn.WebAuthnAuth memory auth = _webAuthn(challenge, data[65:]);
 
-        return verifier == ECDSA.recover(ECDSA.toEthSignedMessageHash(userOpHash), data[:65])
-            && WebAuthn.verify(challenge, true, auth, signer.pubKeySlt1, signer.pubKeySlt2)
-            ? SIG_VALIDATION_SUCCESS
-            : SIG_VALIDATION_FAILED;
+        bool verifierOk = verifier == ECDSA.recover(ECDSA.toEthSignedMessageHash(userOpHash), data[:65]);
+        bool signerOk = WebAuthn.verify(challenge, true, auth, signer.pubKeySlt1, signer.pubKeySlt2);
+        return verifierOk && signerOk ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
     }
 
     function _validateECDSAMember(Signer memory signer, bytes32 userOpHash, bytes calldata data)
@@ -286,10 +285,9 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         returns (uint256 validationData)
     {
         bytes32 hash = ECDSA.toEthSignedMessageHash(userOpHash);
-        return verifier == ECDSA.recover(hash, data[:65])
-            && address(uint160(uint256(signer.pubKeySlt1))) == ECDSA.recover(hash, data[65:])
-            ? SIG_VALIDATION_SUCCESS
-            : SIG_VALIDATION_FAILED;
+        bool verifierOk = verifier == ECDSA.recover(hash, data[:65]);
+        bool signerOk = address(uint160(uint256(signer.pubKeySlt1))) == ECDSA.recover(hash, data[65:]);
+        return verifierOk && signerOk ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
     }
 
     function _webAuthn(bytes memory challenge, bytes memory data)
