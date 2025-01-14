@@ -4,8 +4,8 @@ This repository is a fork of [eth-infinitism/account-abstraction](https://github
 
 | Contract                                                                           | Address                                      |
 | ---------------------------------------------------------------------------------- | -------------------------------------------- |
-| [`SimpleTeamAccount.sol`](./contracts/samples/SimpleTeamAccount.sol)               | `0x40DA7aECC1e711a2F683642878692AAEFDDA0E32` |
-| [`SimpleTeamAccountFactory.sol`](./contracts/samples/SimpleTeamAccountFactory.sol) | `0xF3150664c2a505690bbaA23a5d9bF863eeFC485B` |
+| [`SimpleTeamAccount.sol`](./contracts/samples/SimpleTeamAccount.sol)               | `0x5eC82BC221333Eb3e21BE9F52dCb61Fb524AF0A4` |
+| [`SimpleTeamAccountFactory.sol`](./contracts/samples/SimpleTeamAccountFactory.sol) | `0x6D0A9F4A178c7Bbe4A14892A4Ec572da61c66A50` |
 
 ## Usage
 
