@@ -85,6 +85,10 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         return EfficientHashLib.hash(pubKeySlt1, pubKeySlt2);
     }
 
+    function getVerifierHash(bytes32 userOpHash, bytes32 signerId) public pure returns (bytes32) {
+        return EfficientHashLib.hash(userOpHash, signerId);
+    }
+
     // solhint-disable-next-line no-empty-blocks
     receive() external payable {}
 
@@ -224,7 +228,8 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
         override
         returns (uint256 validationData)
     {
-        Signer memory signer = signers[bytes32(userOp.signature[:32])];
+        bytes32 signerId = bytes32(userOp.signature[:32]);
+        Signer memory signer = signers[signerId];
         require(signer.level != Access.Outsider, "account: unauthorized");
 
         // Assuming WebAuthn signature.
@@ -233,14 +238,15 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
             if (signer.level == Access.Owner) {
                 return _validateWebAuthnOwner(signer, userOpHash, data);
             }
-            return _validateWebAuthnMember(signer, userOpHash, data);
+
+            return _validateWebAuthnMember(signer, userOpHash, getVerifierHash(userOpHash, signerId), data);
         }
 
         // Assuming ECDSA signature.
         if (signer.level == Access.Owner) {
             return _validateECDSAOwner(signer, userOpHash, data);
         }
-        return _validateECDSAMember(signer, userOpHash, data);
+        return _validateECDSAMember(signer, userOpHash, getVerifierHash(userOpHash, signerId), data);
     }
 
     function _validateWebAuthnOwner(Signer memory signer, bytes32 userOpHash, bytes calldata data)
@@ -266,27 +272,28 @@ contract SimpleTeamAccount is BaseAccount, TokenCallbackHandler, Initializable {
             : SIG_VALIDATION_FAILED;
     }
 
-    function _validateWebAuthnMember(Signer memory signer, bytes32 userOpHash, bytes calldata data)
-        internal
-        view
-        returns (uint256 validationData)
-    {
+    function _validateWebAuthnMember(
+        Signer memory signer,
+        bytes32 userOpHash,
+        bytes32 verifierHash,
+        bytes calldata data
+    ) internal view returns (uint256 validationData) {
         bytes memory challenge = abi.encode(userOpHash);
         WebAuthn.WebAuthnAuth memory auth = _webAuthn(challenge, data[65:]);
 
-        bool verifierOk = verifier == ECDSA.recover(ECDSA.toEthSignedMessageHash(userOpHash), data[:65]);
+        bool verifierOk = verifier == ECDSA.recover(ECDSA.toEthSignedMessageHash(verifierHash), data[:65]);
         bool signerOk = WebAuthn.verify(challenge, true, auth, signer.pubKeySlt1, signer.pubKeySlt2);
         return verifierOk && signerOk ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
     }
 
-    function _validateECDSAMember(Signer memory signer, bytes32 userOpHash, bytes calldata data)
+    function _validateECDSAMember(Signer memory signer, bytes32 userOpHash, bytes32 verifierHash, bytes calldata data)
         internal
         view
         returns (uint256 validationData)
     {
-        bytes32 hash = ECDSA.toEthSignedMessageHash(userOpHash);
-        bool verifierOk = verifier == ECDSA.recover(hash, data[:65]);
-        bool signerOk = address(uint160(uint256(signer.pubKeySlt1))) == ECDSA.recover(hash, data[65:]);
+        bool verifierOk = verifier == ECDSA.recover(ECDSA.toEthSignedMessageHash(verifierHash), data[:65]);
+        bool signerOk = address(uint160(uint256(signer.pubKeySlt1)))
+            == ECDSA.recover(ECDSA.toEthSignedMessageHash(userOpHash), data[65:]);
         return verifierOk && signerOk ? SIG_VALIDATION_SUCCESS : SIG_VALIDATION_FAILED;
     }
 
