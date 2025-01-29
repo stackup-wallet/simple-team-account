@@ -8,6 +8,8 @@ import "@nomicfoundation/hardhat-verify";
 import "solidity-coverage";
 import { resolve } from "path";
 
+import "./tasks/deployP256Verifier";
+
 const dotenvConfigPath: string = process.env.DOTENV_CONFIG_PATH || "./.env";
 dotenvConfig({ path: resolve(__dirname, dotenvConfigPath) });
 
@@ -71,6 +73,7 @@ const config: HardhatUserConfig = {
     localgeth: { url: "http://localgeth:8545" },
 
     mainnet: getChainConfig(process.env.ETHEREUM_RPC),
+    base: getChainConfig(process.env.BASE_RPC),
     sepolia: getChainConfig(process.env.SEPOLIA_RPC),
     baseSepolia: getChainConfig(process.env.BASE_SEPOLIA_RPC),
   },
@@ -81,6 +84,7 @@ const config: HardhatUserConfig = {
   etherscan: {
     apiKey: {
       mainnet: process.env.ETHERSCAN_API_KEY || "",
+      base: process.env.BASESCAN_API_KEY || "",
       sepolia: process.env.ETHERSCAN_API_KEY || "",
       baseSepolia: process.env.BASESCAN_API_KEY || "",
     },
