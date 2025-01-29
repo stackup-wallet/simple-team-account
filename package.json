@@ -65,7 +65,7 @@
     "ethereumjs-wallet": "^1.0.1",
     "hardhat-deploy": "^0.11.23",
     "hardhat-deploy-ethers": "^0.3.0-beta.11",
-    "solady": "^0.0.286",
+    "solady": "^0.1.1",
     "solidity-coverage": "^0.8.4",
     "source-map-support": "^0.5.19",
     "table": "^6.8.0",
